@@ -1,0 +1,14 @@
+create extension if not exists pgcrypto;
+create table profiles(id uuid primary key references auth.users on delete cascade, name text, role text not null default 'admin' check (role in ('owner','admin','viewer')));
+create table products(id uuid primary key default gen_random_uuid(), name text not null, slug text unique not null, logo_url text, domain text, description text, stage text not null default 'development' check (stage in ('development','testing','production')), monitor_url text, created_at timestamptz default now());
+create table plans(id uuid primary key default gen_random_uuid(), product_id uuid not null references products on delete cascade, name text not null, price_cents int not null check (price_cents>=0), billing_interval text not null default 'month', trial_days int default 0);
+create table subscribers(id uuid primary key default gen_random_uuid(), product_id uuid not null references products on delete cascade, external_id text, name text not null, email text not null, created_at timestamptz default now(), unique(product_id, external_id));
+create table subscriptions(id uuid primary key default gen_random_uuid(), subscriber_id uuid not null references subscribers on delete cascade, plan_id uuid not null references plans, status text not null check (status in ('trialing','active','past_due','canceled')), trial_ends_at timestamptz, current_period_end timestamptz, canceled_at timestamptz);
+create table payments(id uuid primary key default gen_random_uuid(), subscription_id uuid not null references subscriptions on delete cascade, amount_cents int not null, status text not null check (status in ('approved','pending','failed','refunded')), paid_at timestamptz, created_at timestamptz default now());
+create table uptime_checks(id bigint generated always as identity primary key, product_id uuid not null references products on delete cascade, checked_at timestamptz default now(), is_up boolean not null, response_ms int, status_code int);
+create table incidents(id uuid primary key default gen_random_uuid(), product_id uuid not null references products on delete cascade, started_at timestamptz default now(), resolved_at timestamptz, summary text);
+create index on subscribers(product_id); create index on subscriptions(status); create index on uptime_checks(product_id, checked_at desc);
+-- RLS: apenas usuários autenticados com perfil owner/admin
+do $$ declare t text; begin foreach t in array array['profiles','products','plans','subscribers','subscriptions','payments','uptime_checks','incidents'] loop
+ execute format('alter table %I enable row level security', t);
+ execute format($f$create policy admin_all on %I for all to authenticated using (exists(select 1 from profiles p where p.id=auth.uid() and p.role in ('owner','admin'))) with check (exists(select 1 from profiles p where p.id=auth.uid() and p.role in ('owner','admin')))$f$, t); end loop; end $$;
